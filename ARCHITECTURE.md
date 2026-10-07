@@ -1,54 +1,104 @@
-# Final architecture: spoken grammar score (SHL Hiring Assessment 2026)
+# Architecture: spoken grammar score (SHL Hiring Assessment 2026)
 
 ## Task
-Predict a 0 to 5 grammar score for a 45 to 60 second spoken answer. The label is a human mean opinion score. Metrics are RMSE and Pearson on a hidden test set (216 clips). The public leaderboard scores about 60% of it, and the private score covers the rest.
+Predict a 0 to 5 grammar score for a 45 to 60 second spoken answer. The label is a human mean opinion score. Scoring uses RMSE and Pearson correlation on a hidden test set of 216 clips.
 
-## Final submission
-`FINAL_submission.csv`, from the model below. Public RMSE **0.4247**.
+## Final result
+`submission.csv`, from the model below: **public RMSE 0.4247**. Public leaderboard leaders score about 0.31 to 0.33.
 
-## Model
+## Diagram
 
-Each step has a reason for being there.
+```
+                       spoken answer (WAV, 16 kHz)
+                                 │
+            ┌────────────────────┴────────────────────┐
+            ▼                                         ▼
+  Whisper-small.en transcript              WavLM-base-plus (frozen)
+  + word confidence                        hidden states, layers 8, 9, 10
+            │                                         │
+            ▼                                         ▼ mean over time, concatenated
+  Text features (61)                       PCA → 64 components (fit on train only)
+  · grammar errors (LanguageTool)                       │
+  · fluency (rate, pauses, fillers)                     │
+  · vocabulary (diversity, repetition)                  │
+            │                                         │
+            └──────────────┬──────────────────────────┘
+                           ▼
+                 125 input features per clip
+                           │
+            ┌──────────────┴──────────────┐
+            ▼                             ▼
+    Ridge regression              Gradient boosting
+    (linear, regularised)         (non-linear)
+            │                             │
+            └──────────────┬──────────────┘
+                           ▼
+          non-negative blend (weights from out-of-fold predictions)
+                           │
+                           ▼
+          affine recalibration  y = 1.094·x − 0.307   (counters shrinkage)
+                           │
+                           ▼
+                clip to [0, 5]  →  submission
+```
 
-**1. Text features (61 values).** Computed from a Whisper-small.en transcript, with per-word confidence.
-- Grammar checks: LanguageTool error rates per 100 words, clean-sentence ratio, and error types. These measure grammatical errors directly.
-- Fluency: speaking rate, pause statistics from the audio, filler and false-start rates, and transcript confidence. These measure how smoothly the answer is delivered.
-- Lexical: vocabulary diversity (moving-average type-token ratio), repetition, and sentence length. These measure range and variety of language.
+## Decisions and why
 
-**2. Audio features (64 values).** Frozen WavLM-base-plus, layers 8, 9 and 10, mean-pooled over time, on the first 65 seconds of each clip. The three layers are concatenated and reduced to 64 principal components, with the PCA fitted on training clips only. Middle layers were chosen because they carry more speech-delivery information than the final, recognition-tuned layer. The choice came from a layer sweep under random CV.
+**1. Text features (61 values).** They measure things a rater would notice: grammatical errors, pauses and fillers, and vocabulary range. Each feature can be explained in one sentence. Whisper-small was used because it runs on CPU in reasonable time, and its transcripts include word timings, which the fluency features need.
 
-**3. Regression.** Two standard models on the combined features:
-- Ridge regression: a linear model with regularisation, easy to interpret.
-- Gradient boosting: captures non-linear effects that a linear model would miss.
+**2. WavLM-base, layers 8 to 10 (64 values after PCA).** Audio carries information about delivery that a transcript loses. WavLM is a self-supervised speech model used as a frozen feature extractor, so no training is needed on 769 clips. Middle layers were chosen because the final layer is specialised for the model's own pretraining task. WavLM-base is cheaper to run than the large version, and the large version did not do better in our validation (see below).
 
-Their predictions are combined with non-negative weights fitted on out-of-fold predictions (ridge 0.38, gradient boosting 0.62). Non-negative weights keep the combination interpretable: each model's contribution is positive and sums to one.
+**3. PCA to 64 components, fitted on training clips only.** Three layers of 768 values each would overfit on 769 clips. PCA keeps the main variation. Fitting it on training clips only means no test information leaks into the features.
 
-**4. Recalibration.** A linear correction, `y = 1.094 x - 0.307`, fitted on out-of-fold predictions. Regression predictions shrink toward the average, so this stretches them back out. The correction is fitted on out-of-fold predictions and checked with a nested split, so it doesn't use the scored clips.
+**4. Ridge regression and gradient boosting, blended.** Ridge is a linear model that is hard to overfit and easy to explain. Gradient boosting can capture non-linear effects that a straight line misses. The blend was better than either model alone on speaker-grouped validation.
 
-**5. Output.** Predictions clipped to [0, 5]. All training clips are kept, including the 37 with a label of 0. The brief allows 0 as a valid score.
+**5. Non-negative blend weights.** Each model's contribution has to be positive, so the blend stays interpretable. Negative weights could cancel one model against the other and are hard to justify.
 
-**Reproduction note.** The submission came from the original run, with weights 0.38 and 0.62 and the correction 1.094 and -0.307. Rebuilding with `scripts/reproduce_final.py` gives weights 0.33 and 0.67 and the correction 1.073 and -0.244, because the fold split and the subsample differ slightly between runs. The rebuilt predictions agree with the submitted file (correlation 0.9996, mean absolute difference 0.023), so the difference is small, but the exact numbers depend on the run.
+**6. Affine recalibration.** Regression predictions shrink toward the average, so the correction stretches them back out. It is fitted on out-of-fold predictions, so it does not use the clips it is scored on. Its effect on the leaderboard was small, so it is kept for its logic rather than its score.
 
-## Training and validation
-- Principal components and regression weights are fitted on training clips only.
-- Validation uses 5-fold stratified cross-validation, repeated twice. In this version the folds are random, which lets clips from the same speaker appear in training and validation. That makes the cross-validation estimate optimistic (about 0.58 RMSE).
-- Speaker-grouped cross-validation gives a more honest estimate for the same features (about 0.78 RMSE). The leaderboard result (0.4247) sits between the two.
+**7. Clipping to [0, 5].** The scale is defined on that range, and a score outside it is meaningless.
 
-## Limitations
-1. The test clips are shorter than the training clips (median 45 s against 60 s), and the audio features separate the two sets. The model may partly fit patterns common in longer clips.
-2. Random cross-validation overstates performance because of speaker overlap.
-3. Recalibration gained nothing measurable on the leaderboard (0.4248 to 0.4247), so it's kept for its logic, not its score.
-4. Zero-label clips are not treated specially.
+**8. Zero-label clips kept in training.** The brief allows 0 as a valid score, so removing those clips would discard examples the test set may contain.
 
-## Optional step, pending validation
-A no-speech rule would set the score to 0 for clips where a speech model hears no words. It's logically justified, since a clip with no speech can't be graded for grammar. It is not in the final file yet. It will be added only if it catches most training zeros without zeroing real answers.
+**9. No speech-detection rule in the submission.** The idea is logically sound (a clip with no speech cannot be graded), but it was not validated before the deadline, so it is not in the model.
 
-## Dropped (tested, not used)
-These were tried to improve the score. None had a clear justification or measurable gain, so they are not part of the architecture:
-- A blend of the current model with separate GPU-feature models (80/20). It scored 0.4234 publicly, but mixing two unrelated models has no principled basis.
-- WavLM-large in place of WavLM-base. Worse under grouped CV (0.82 against 0.77).
-- The Colab chunk features and the Whisper encoder features. No gain in layer sweeps.
-- Colab verbatim transcripts. Worse as a replacement and no gain as added measures.
+## Why the score is limited
+
+Our model uses fewer and smaller inputs than the leaderboard leaders. The specific limits in our work:
+
+- **Smaller models for the main features.** The large WavLM model scored worse than WavLM-base under speaker-grouped validation (0.82 against 0.77). The large Whisper encoder helped only when combined at one layer, which looked like noise.
+- **No word timestamps on the large-model transcripts.** The large-model transcripts we produced have no word timing, so the fluency features that depend on it cannot be computed. Without fluency, those transcripts scored worse than the local ones (0.80 against 0.78 under speaker-grouped validation).
+- **No rubric-based language-model features.** Running a language model with the scoring rubric needs GPU time we did not have.
+- **Fewer base models.** The blend has two models, which leaves less room to correct individual errors.
+- **Distribution shift.** Test clips are shorter than training clips (median 45 s against 60 s). Validation on training clips may therefore be tuned to longer clips.
+- **Validation gap.** Random-fold validation gives about 0.58 RMSE, speaker-grouped validation about 0.78, and the leaderboard 0.42. Random folds overstate how well the model generalises to new speakers.
+
+Choices were made to keep the model explainable and to avoid tuning to the leaderboard. That is why the score is lower than the leaders', and it is the trade-off this submission makes.
+
+## Validation
+
+- **Random stratified CV** (5 folds, 2 repeats): about 0.58 RMSE. Optimistic, because clips from the same speaker can fall into both training and validation folds.
+- **Speaker-grouped CV** (speakers approximated by clustering): about 0.78 RMSE. The more honest estimate for new speakers.
+- **Leaderboard:** 0.4247.
+
+## Things tested and not used
+
+Each of these was tried to improve the score. None helped enough to keep:
+- A blend of the current model with separate large-feature models. It scored 0.4234 publicly, but mixing two unrelated models has no clear basis.
+- WavLM-large in place of WavLM-base. Worse under speaker-grouped validation.
+- Chunked WavLM-large features, and the Whisper encoder. No gain in layer sweeps.
+- Large-model verbatim transcripts, as a full replacement or as extra measures. Worse.
 - Reweighting training clips toward the test set. No gain on short clips.
 - Removing duration from the embeddings, and joint PCA with test clips. No gain.
-- A stretch factor around the mean, and a single-model variant chosen by grouped CV. The single model scored 0.5127 publicly.
+- XGBoost in place of gradient boosting, and tuned settings. No gain beyond noise.
+- Speaker pooling of predictions. Pearson improved slightly on training, but the leaderboard score was slightly worse (0.4274).
+- A single model chosen on speaker-grouped validation. Scored 0.5127 publicly.
+- Fold schemes based on duration. No change in error estimates.
+
+## Known limitations
+
+1. Our inputs are fewer and smaller than the leaders' (see above).
+2. Random-fold validation overstates performance because of speaker overlap.
+3. Test clips differ from training clips in length, and the audio features partly separate the two sets.
+4. Zero-label clips are not treated specially.
+5. The blend weights and recalibration come from random folds. Speaker-grouped folds would give different values, and on the leaderboard the grouped-fold choices scored worse.

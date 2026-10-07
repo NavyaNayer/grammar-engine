@@ -1,0 +1,20 @@
+# Data and caches (never commit competition data or model caches)
+data/
+.cache/
+*.npy
+*.npz
+
+# Generated outputs
+reproduced_submission.csv
+submission.csv
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Secrets
+.env
+kaggle.json
+*.token

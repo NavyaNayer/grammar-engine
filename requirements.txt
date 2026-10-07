@@ -1,0 +1,38 @@
+# Core scientific stack
+numpy>=1.26,<3
+pandas>=2.2,<3
+scipy>=1.13,<2
+scikit-learn>=1.5,<2
+
+# Audio I/O, resampling and signal analysis
+librosa>=0.10.2,<0.12
+soundfile>=0.12.1,<0.14
+audioread>=3.0.1,<4
+
+# ASR + neural language modelling (CPU wheels are enough for this workload)
+torch>=2.3,<3
+transformers>=4.44,<5
+sentencepiece>=0.2.0,<0.3
+accelerate>=0.33,<2
+
+# Rule-based grammatical error detection (requires a JRE on PATH)
+language-tool-python>=2.8,<3
+
+# Plotting
+matplotlib>=3.9,<4
+seaborn>=0.13,<0.14
+
+# Notebook + tooling
+jupyterlab>=4.2,<5
+ipykernel>=6.29,<7
+ipywidgets>=8.1,<9
+nbformat>=5.10,<6
+nbconvert>=7.16,<8
+
+# Utilities
+tqdm>=4.66,<5
+joblib>=1.4,<2
+pyyaml>=6.0,<7
+
+# Data download (scripts/download_data.py)
+kagglehub>=0.3,<1
